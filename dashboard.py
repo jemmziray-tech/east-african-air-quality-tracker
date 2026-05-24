@@ -2,7 +2,11 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import pydeck as pdk
-import time
+import os
+
+# --- 1. CLOUD ORCHESTRATION ---
+# Tunaleta harvester hapa ili dashboard ijisimamie yenyewe kwenye cloud
+from harvester import setup_database, run_etl_pipeline
 
 # Usanifu wa Ukurasa Mkuu
 st.set_page_config(
@@ -10,7 +14,12 @@ st.set_page_config(
 )
 DB_FILE = "air_quality.db"
 
+# Kama tupo kwenye cloud na database haipo, itengeneze mara moja
+if not os.path.exists(DB_FILE):
+    setup_database()
 
+
+# --- 2. DATA RETRIEVAL ---
 def get_latest_data():
     try:
         conn = sqlite3.connect(DB_FILE)
@@ -22,7 +31,8 @@ def get_latest_data():
         df = pd.read_sql_query(query, conn)
         conn.close()
         return df
-    except sqlite3.OperationalError:
+    # Tumerekebisha exception ili kuzuia programu isicrash kama table haipo
+    except (sqlite3.OperationalError, pd.errors.DatabaseError):
         return pd.DataFrame()
 
 
@@ -34,16 +44,25 @@ st.markdown(
 
 
 # --- MAIN DASHBOARD FRAGMENT ---
-# Hii inazuia ukurasa mzima kujirudia (flickering), inabadilisha data tu.
-@st.fragment(run_every="30s")
+# Fragment hii inajirudia kila baada ya dakika 5 (5m).
+# Hii inachukua nafasi ya 'while True' loop ya kwenye harvester yako ya zamani.
+@st.fragment(run_every="5m")
 def render_dashboard():
+
+    # 1. Trigger the harvester pipeline directly from the UI thread
+    with st.spinner("📡 Harvesting live satellite data across Tanzania..."):
+        run_etl_pipeline()
+
+    # 2. Read the newly fetched data
     df = get_latest_data()
 
     if df.empty:
-        st.warning("⚠️ Database is empty or initializing. Please run `harvester.py`.")
+        st.warning(
+            "⚠️ Mfumo unakusanya data (System initializing). Tafadhali subiri..."
+        )
         return
 
-    # 1. KPIs (Key Performance Indicators)
+    # 3. KPIs (Key Performance Indicators)
     national_avg = df["pm2_5"].mean()
     worst_region = df.loc[df["pm2_5"].idxmax()]
     best_region = df.loc[df["pm2_5"].idxmin()]
@@ -68,17 +87,15 @@ def render_dashboard():
 
     st.divider()
 
-    # 2. Geospatial Map & Ranking Table Layout
+    # 4. Geospatial Map & Ranking Table Layout
     col_map, col_table = st.columns([1.5, 1])
 
     with col_map:
         st.markdown("### 🗺️ Sensor Map")
-        # Color dynamically changes based on pollution severity
         df["color"] = df["pm2_5"].apply(
             lambda x: [255, 75, 75, 200] if x > 25 else [75, 255, 120, 200]
         )
 
-        # Centered exactly on Tanzania
         view_state = pdk.ViewState(
             latitude=-6.3690, longitude=34.8888, zoom=5.2, pitch=35
         )
@@ -88,7 +105,7 @@ def render_dashboard():
             data=df,
             get_position="[lon, lat]",
             get_color="color",
-            get_radius=20000,  # Optimized radius for regional view
+            get_radius=20000,
             pickable=True,
         )
 
@@ -103,9 +120,8 @@ def render_dashboard():
 
     with col_table:
         st.markdown("### 📊 Air Quality Leaderboard")
-        st.caption("Sorted by PM 2.5 concentration (Highest to Lowest)")
+        st.caption("Sorted by PM 2.5 concentration")
 
-        # Sort values and prepare for sleek display
         df_sorted = df.sort_values(by="pm2_5", ascending=False).reset_index(drop=True)
 
         st.dataframe(
@@ -117,7 +133,7 @@ def render_dashboard():
                     help="WHO guideline is < 25 µg/m³",
                     format="%f",
                     min_value=0,
-                    max_value=70,  # Scaled to highlight variations better
+                    max_value=70,
                 ),
                 "pm10": "PM 10",
             },
@@ -127,5 +143,5 @@ def render_dashboard():
         )
 
 
-# Execute the rendering function
+# Washa dashboard
 render_dashboard()
