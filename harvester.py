@@ -45,7 +45,8 @@ TANZANIA_REGIONS = {
 
 # --- 2. DATABASE SETUP ---
 def setup_database():
-    conn = sqlite3.connect(DB_FILE)
+    """Creates the DB and Tables. Uses timeout=20 to prevent locking errors."""
+    conn = sqlite3.connect(DB_FILE, timeout=20)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS pollution_log (
@@ -67,6 +68,7 @@ def setup_database():
 
 # --- 3. CONCURRENT EXTRACTION ---
 def fetch_single_region(region_data):
+    """Hits the API for a single region."""
     city, coords = region_data
     url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={coords['lat']}&longitude={coords['lon']}&current=pm10,pm2_5"
 
@@ -86,6 +88,7 @@ def fetch_single_region(region_data):
 
 
 def run_etl_pipeline():
+    """Orchestrates the multithreaded fetching and bulk insertion."""
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     valid_records = []
 
@@ -95,12 +98,11 @@ def run_etl_pipeline():
 
         for result in results:
             if result:
-                # Append current_time to the front of the tuple for SQL insertion
                 valid_records.append((current_time,) + result)
 
-    # Bulk insert to SQLite (Much faster than individual inserts)
+    # Bulk insert to SQLite with timeout lock protection
     if valid_records:
-        conn = sqlite3.connect(DB_FILE)
+        conn = sqlite3.connect(DB_FILE, timeout=20)
         cursor = conn.cursor()
         cursor.executemany(
             """
@@ -114,11 +116,10 @@ def run_etl_pipeline():
         logging.info(f"ETL Cycle Complete. {len(valid_records)} regions secured in DB.")
 
 
-# --- 4. ORCHESTRATION ---
+# --- 4. LOCAL TESTING EXECUTION ---
 if __name__ == "__main__":
-    logging.info("🚀 Starting Tanzania Regional Air Quality Harvester...")
+    logging.info("🚀 Starting Local Tanzania Regional Air Quality Harvester...")
     setup_database()
-
     while True:
         run_etl_pipeline()
-        time.sleep(60)  # Run every minute
+        time.sleep(60)

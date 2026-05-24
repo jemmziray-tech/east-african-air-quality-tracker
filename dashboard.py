@@ -2,27 +2,32 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import pydeck as pdk
-import os
+import time
 
 # --- 1. CLOUD ORCHESTRATION ---
-# Tunaleta harvester hapa ili dashboard ijisimamie yenyewe kwenye cloud
 from harvester import setup_database, run_etl_pipeline
 
-# Usanifu wa Ukurasa Mkuu
 st.set_page_config(
     page_title="Tanzania AQI Intelligence", page_icon="🇹🇿", layout="wide"
 )
 DB_FILE = "air_quality.db"
 
-# Kama tupo kwenye cloud na database haipo, itengeneze mara moja
-if not os.path.exists(DB_FILE):
-    setup_database()
+# Initialize database safely on startup
+setup_database()
+
+
+# Concurrency control: Runs ETL strictly once every 5 minutes (300 seconds),
+# preventing DB locks even if 1,000 users visit the site simultaneously.
+@st.cache_data(ttl=300, show_spinner=False)
+def trigger_etl_safely():
+    run_etl_pipeline()
+    return time.time()
 
 
 # --- 2. DATA RETRIEVAL ---
 def get_latest_data():
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = sqlite3.connect(DB_FILE, timeout=20)
         query = """
             SELECT city, lat, lon, pm2_5, pm10, MAX(timestamp) as last_updated
             FROM pollution_log
@@ -31,8 +36,7 @@ def get_latest_data():
         df = pd.read_sql_query(query, conn)
         conn.close()
         return df
-    # Tumerekebisha exception ili kuzuia programu isicrash kama table haipo
-    except (sqlite3.OperationalError, pd.errors.DatabaseError):
+    except (sqlite3.OperationalError, pd.errors.DatabaseError) as e:
         return pd.DataFrame()
 
 
@@ -44,25 +48,24 @@ st.markdown(
 
 
 # --- MAIN DASHBOARD FRAGMENT ---
-# Fragment hii inajirudia kila baada ya dakika 5 (5m).
-# Hii inachukua nafasi ya 'while True' loop ya kwenye harvester yako ya zamani.
+# Refreshes just this section of the UI without reloading the whole web page
 @st.fragment(run_every="5m")
 def render_dashboard():
 
-    # 1. Trigger the harvester pipeline directly from the UI thread
+    # 1. Trigger the harvester safely
     with st.spinner("📡 Harvesting live satellite data across Tanzania..."):
-        run_etl_pipeline()
+        trigger_etl_safely()
 
-    # 2. Read the newly fetched data
+    # 2. Retrieve data
     df = get_latest_data()
 
     if df.empty:
         st.warning(
-            "⚠️ Mfumo unakusanya data (System initializing). Tafadhali subiri..."
+            "⚠️ System initializing or acquiring satellite link. Please wait a few seconds and refresh the page."
         )
         return
 
-    # 3. KPIs (Key Performance Indicators)
+    # 3. Key Performance Indicators (KPIs)
     national_avg = df["pm2_5"].mean()
     worst_region = df.loc[df["pm2_5"].idxmax()]
     best_region = df.loc[df["pm2_5"].idxmin()]
@@ -92,6 +95,7 @@ def render_dashboard():
 
     with col_map:
         st.markdown("### 🗺️ Sensor Map")
+        # Color coding: Red if PM 2.5 > 25 (WHO Guideline), else Green
         df["color"] = df["pm2_5"].apply(
             lambda x: [255, 75, 75, 200] if x > 25 else [75, 255, 120, 200]
         )
@@ -143,5 +147,5 @@ def render_dashboard():
         )
 
 
-# Washa dashboard
+# Execute the Dashboard
 render_dashboard()
